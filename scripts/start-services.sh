@@ -20,12 +20,13 @@ mkdir -p "$LOG_DIR"
 
 LLAMA_SERVER="${LLAMA_SERVER:-$STACK_DIR/llama.cpp/build/bin/llama-server}"
 WHISPER_SERVER="${WHISPER_SERVER:-$STACK_DIR/whisper.cpp/build/bin/whisper-server}"
-WHISPER_MODEL="${WHISPER_MODEL:-$STACK_DIR/whisper.cpp/models/ggml-base.en.bin}"
-LLM_MODEL="${LLM_MODEL:-}"
+WHISPER_MODEL="${WHISPER_MODEL:-$STACK_DIR/whisper.cpp/models/ggml-small.bin}"
+# Default to the model setup.sh downloads; override with LLM_MODEL=/path.
+LLM_MODEL="${LLM_MODEL:-$STACK_DIR/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf}"
 
-if [ -z "$LLM_MODEL" ]; then
-  echo "ERROR: set LLM_MODEL to a GGUF chat model path." >&2
-  echo "  e.g. LLM_MODEL=/path/to/model.gguf ./scripts/start-services.sh" >&2
+if [ ! -f "$LLM_MODEL" ]; then
+  echo "ERROR: LLM model not found: $LLM_MODEL" >&2
+  echo "  Run ./scripts/setup.sh, or set LLM_MODEL=/path/to/model.gguf" >&2
   exit 1
 fi
 

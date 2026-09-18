@@ -7,6 +7,7 @@
 #   - whisper.cpp  (STT server)          -> $STACK_DIR/whisper.cpp
 #   - llama.cpp    (LLM server)          -> $STACK_DIR/llama.cpp
 #   - Piper        (neural TTS) + voices -> $STACK_DIR/piper, $STACK_DIR/piper-voices
+#   - Qwen2.5-7B-Instruct chat model     -> $STACK_DIR/models  (unless DOWNLOAD_LLM=0)
 #
 # Re-running is safe: existing clones/binaries/models are reused.
 #
@@ -16,10 +17,17 @@
 # Override the install location (default /tmp/opencode):
 #   STACK_DIR=$HOME/.voice-ai ./scripts/setup.sh
 #
+# Skip the ~4.7GB LLM download (bring your own model):
+#   DOWNLOAD_LLM=0 ./scripts/setup.sh
+#
 set -euo pipefail
 
 STACK_DIR="${STACK_DIR:-/tmp/opencode}"
-WHISPER_MODEL_NAME="${WHISPER_MODEL_NAME:-base.en}"
+# Multilingual "small" model handles Bulgarian + English (base.en is English-only).
+WHISPER_MODEL_NAME="${WHISPER_MODEL_NAME:-small}"
+DOWNLOAD_LLM="${DOWNLOAD_LLM:-1}"
+LLM_FILE="${LLM_FILE:-Qwen2.5-7B-Instruct-Q4_K_M.gguf}"
+LLM_URL_SRC="${LLM_URL_SRC:-https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf}"
 
 log() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 
@@ -103,6 +111,23 @@ download_voice() {
 }
 download_voice "bg/bg_BG/dimitar/medium" "bg_BG-dimitar-medium"
 download_voice "en/en_US/lessac/medium"  "en_US-lessac-medium"
+download_voice "en/en_US/ryan/high"      "en_US-ryan-high"
+
+# ---------------------------------------------------------------------------
+# 5. LLM chat model (Qwen2.5-7B-Instruct, ~4.7GB) — optional
+# ---------------------------------------------------------------------------
+log "Setting up LLM chat model"
+mkdir -p "$STACK_DIR/models"
+if [ "$DOWNLOAD_LLM" = "1" ]; then
+  if [ ! -f "$STACK_DIR/models/$LLM_FILE" ]; then
+    echo "Downloading $LLM_FILE (~4.7GB)…"
+    curl -fL -o "$STACK_DIR/models/$LLM_FILE" "$LLM_URL_SRC"
+  else
+    echo "LLM model $LLM_FILE already present."
+  fi
+else
+  echo "Skipping LLM download (DOWNLOAD_LLM=0). Bring your own GGUF and set LLM_MODEL."
+fi
 
 log "Setup complete."
 cat <<EOF
@@ -112,11 +137,12 @@ Installed under: $STACK_DIR
   whisper-server : $STACK_DIR/whisper.cpp/build/bin/whisper-server
   whisper model  : $STACK_DIR/whisper.cpp/models/ggml-${WHISPER_MODEL_NAME}.bin
   piper          : $STACK_DIR/piper/piper
-  voices         : $STACK_DIR/piper-voices/{bg_BG-dimitar-medium,en_US-lessac-medium}.onnx
+  voices         : bg_BG-dimitar-medium, en_US-ryan-high (+ en_US-lessac-medium)
+  LLM model      : $STACK_DIR/models/$LLM_FILE $( [ "$DOWNLOAD_LLM" = "1" ] || echo "(skipped)" )
 
 Next:
-  1. Point LLM_MODEL at a GGUF chat model you have, then start the backends:
-       LLM_MODEL=/path/to/model.gguf ./scripts/start-services.sh
+  1. Start the backends (uses the downloaded model by default):
+       LLM_MODEL=$STACK_DIR/models/$LLM_FILE ./scripts/start-services.sh
   2. Start the Java app:
        ./scripts/run.sh
   3. Open http://localhost:8080

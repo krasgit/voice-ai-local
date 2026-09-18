@@ -8,7 +8,7 @@ set -euo pipefail
 STACK_DIR="${STACK_DIR:-/opt/stack}"
 LLAMA_SERVER="$STACK_DIR/llama.cpp/build/bin/llama-server"
 WHISPER_SERVER="$STACK_DIR/whisper.cpp/build/bin/whisper-server"
-WHISPER_MODEL="${WHISPER_MODEL:-$STACK_DIR/whisper.cpp/models/ggml-base.en.bin}"
+WHISPER_MODEL="${WHISPER_MODEL:-$STACK_DIR/whisper.cpp/models/ggml-small.bin}"
 LLM_MODEL="${LLM_MODEL:-}"
 
 # whisper-server / llama-server need their co-located shared libraries.

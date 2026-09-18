@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git cmake build-essential ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-ARG WHISPER_MODEL_NAME=base.en
+ARG WHISPER_MODEL_NAME=small
 
 WORKDIR /build
 RUN git clone --depth 1 https://github.com/ggml-org/whisper.cpp \
@@ -49,7 +49,9 @@ RUN mkdir -p voices \
     && curl -fL -o voices/bg_BG-dimitar-medium.onnx      "$BASE/bg/bg_BG/dimitar/medium/bg_BG-dimitar-medium.onnx" \
     && curl -fL -o voices/bg_BG-dimitar-medium.onnx.json "$BASE/bg/bg_BG/dimitar/medium/bg_BG-dimitar-medium.onnx.json" \
     && curl -fL -o voices/en_US-lessac-medium.onnx       "$BASE/en/en_US/lessac/medium/en_US-lessac-medium.onnx" \
-    && curl -fL -o voices/en_US-lessac-medium.onnx.json  "$BASE/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json"
+    && curl -fL -o voices/en_US-lessac-medium.onnx.json  "$BASE/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json" \
+    && curl -fL -o voices/en_US-ryan-high.onnx           "$BASE/en/en_US/ryan/high/en_US-ryan-high.onnx" \
+    && curl -fL -o voices/en_US-ryan-high.onnx.json      "$BASE/en/en_US/ryan/high/en_US-ryan-high.onnx.json"
 
 # ---------------------------------------------------------------------------
 # Stage 3: build the Java app
@@ -75,7 +77,7 @@ WORKDIR /opt/app
 # Native servers + their co-located shared libraries (both live in build/bin).
 COPY --from=native-build /build/whisper.cpp/build/bin/ ${STACK_DIR}/whisper.cpp/build/bin/
 COPY --from=native-build /build/llama.cpp/build/bin/   ${STACK_DIR}/llama.cpp/build/bin/
-COPY --from=native-build /build/whisper-model.bin      ${STACK_DIR}/whisper.cpp/models/ggml-base.en.bin
+COPY --from=native-build /build/whisper-model.bin      ${STACK_DIR}/whisper.cpp/models/ggml-small.bin
 
 # Piper + voices
 COPY --from=piper-fetch /piper-stage/piper        ${STACK_DIR}/piper

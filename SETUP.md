@@ -19,7 +19,7 @@ Piper has no server; the Java app pipes text to `scripts/piper-tts.sh` per reply
 - Linux x86_64 (the Piper binary in setup is for `linux_x86_64`)
 - Java 11+ and Maven
 - `sudo` access for `apt-get` (to install `cmake`, `build-essential`, `espeak-ng`)
-- A GGUF chat model on disk (e.g. from LM Studio, Ollama, or Hugging Face)
+- ~8 GB free disk (multilingual Whisper model + Qwen2.5-7B chat model)
 
 ## 1. One-time setup
 
@@ -27,9 +27,16 @@ Piper has no server; the Java app pipes text to `scripts/piper-tts.sh` per reply
 ./scripts/setup.sh
 ```
 
-This installs build dependencies, then builds whisper.cpp and llama.cpp, downloads
-the Whisper `base.en` model, and installs Piper plus two voices
-(`bg_BG-dimitar-medium`, `en_US-lessac-medium`).
+This installs build dependencies, builds whisper.cpp and llama.cpp, downloads the
+multilingual Whisper `small` model (handles Bulgarian + English), installs Piper
+with voices (`bg_BG-dimitar-medium`, `en_US-ryan-high`), and downloads the
+`Qwen2.5-7B-Instruct` chat model (~4.7 GB).
+
+Skip the LLM download and bring your own model:
+
+```bash
+DOWNLOAD_LLM=0 ./scripts/setup.sh
+```
 
 Everything lands under `/tmp/opencode` by default. To keep it across reboots, pick
 a persistent location:
@@ -44,11 +51,13 @@ Re-running `setup.sh` is safe — it reuses existing clones, binaries, and model
 
 ## 2. Start the backend services
 
-Point `LLM_MODEL` at a GGUF chat model, then:
+Defaults to the model `setup.sh` downloaded, so just:
 
 ```bash
-LLM_MODEL=/path/to/chat-model.gguf ./scripts/start-services.sh
+./scripts/start-services.sh
 ```
+
+(Or override the model: `LLM_MODEL=/path/to/chat-model.gguf ./scripts/start-services.sh`.)
 
 This launches `llama-server` (:8081) and `whisper-server` (:8083) in the
 background and waits until both answer. Logs go to `$STACK_DIR/logs/`.

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
   <meta name="theme-color" content="#0b0b0f">
   <title>Voice AI</title>
+  <link rel="manifest" href="/manifest.json">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -16,20 +17,62 @@
         <option value="chat">General</option>
         <option value="teacher">English Teacher</option>
       </select>
+      <select id="level" title="English level (CEFR)">
+        <option value="">Level: auto</option>
+        <option value="A1">A1</option>
+        <option value="A2">A2</option>
+        <option value="B1">B1</option>
+        <option value="B2">B2</option>
+      </select>
+      <button id="settingsBtn" type="button" title="Settings" aria-label="Settings">⚙</button>
+      <button id="exportBtn" type="button" title="Export conversation" aria-label="Export">⬇</button>
       <button id="clearBtn" type="button" title="Clear conversation" aria-label="Clear conversation">🗑</button>
-      <button id="ttsBtn" type="button" title="Toggle voice: Piper (server) / Browser" aria-label="Toggle voice">🔊 Piper</button>
       <span id="status" class="status">connecting…</span>
     </div>
   </header>
 
+  <div id="mistakes" class="mistakes hidden">
+    <div class="mistakes-head">Corrections this session <button id="mistakesClose" class="link" type="button">hide</button></div>
+    <ul id="mistakesList"></ul>
+  </div>
+
   <section id="chat" aria-live="polite"></section>
+
+  <div id="latency" class="latency"></div>
 
   <form id="textForm">
     <input id="text" autocomplete="off" placeholder="Message…">
     <button id="sendBtn" type="submit" aria-label="Send">➤</button>
     <button id="voiceBtn" type="button" aria-label="Start voice chat">🎙</button>
   </form>
+  <p class="hint" id="tapHint">Tip: click any word in a reply to translate it.</p>
 </main>
+
+<!-- Settings panel -->
+<div id="settings" class="panel hidden" role="dialog" aria-label="Settings">
+  <div class="panel-card">
+    <h2>Settings</h2>
+    <label>Voice engine
+      <select id="ttsEngine">
+        <option value="piper">Piper (server, natural)</option>
+        <option value="browser">Browser (device voices)</option>
+      </select>
+    </label>
+    <label>English voice (Piper)
+      <select id="enVoice">
+        <option value="en_US-ryan-high">Ryan (high)</option>
+        <option value="en_US-lessac-medium">Lessac (medium)</option>
+      </select>
+    </label>
+    <label>Speech speed <span id="speedVal">1.0×</span>
+      <input id="speed" type="range" min="0.7" max="1.6" step="0.1" value="1.0">
+    </label>
+    <label class="row">
+      <input id="pttToggle" type="checkbox"> Push-to-talk (hold to speak)
+    </label>
+    <button id="settingsClose" type="button">Close</button>
+  </div>
+</div>
 
 <!-- ChatGPT-style full-screen voice mode -->
 <div id="voiceOverlay" class="voice-overlay hidden" role="dialog" aria-label="Voice chat">
@@ -46,6 +89,7 @@
 
   <div class="vo-controls">
     <button id="voMute" class="vo-btn" aria-label="Mute microphone">🎙</button>
+    <button id="voPtt" class="vo-btn" aria-label="Push to talk">🔘</button>
     <button id="voInterrupt" class="vo-btn primary" aria-label="Interrupt">⏹</button>
   </div>
 </div>

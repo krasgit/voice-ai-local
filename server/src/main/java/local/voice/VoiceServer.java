@@ -58,11 +58,36 @@ public class VoiceServer {
             serveStatic(exchange, path);
         };
 
-        Undertow.builder()
+        Undertow.Builder b = Undertow.builder()
                 .addHttpListener(PORT, "0.0.0.0")
-                .setHandler(root)
-                .build()
-                .start();
+                .setHandler(root);
+
+        // Optional HTTPS listener so phones can access the microphone (which
+        // browsers require a secure origin for). Enable by setting:
+        //   TLS_KEYSTORE=/path/to/keystore.p12  TLS_PASSWORD=...  [TLS_PORT=8443]
+        String ksPath = System.getenv("TLS_KEYSTORE");
+        String ksPass = System.getenv("TLS_PASSWORD");
+        int tlsPort = Integer.parseInt(System.getenv().getOrDefault("TLS_PORT", "8443"));
+        if (ksPath != null && ksPass != null) {
+            try {
+                java.security.KeyStore ks = java.security.KeyStore.getInstance("PKCS12");
+                try (InputStream in = Files.newInputStream(Paths.get(ksPath))) {
+                    ks.load(in, ksPass.toCharArray());
+                }
+                javax.net.ssl.KeyManagerFactory kmf =
+                        javax.net.ssl.KeyManagerFactory.getInstance(
+                                javax.net.ssl.KeyManagerFactory.getDefaultAlgorithm());
+                kmf.init(ks, ksPass.toCharArray());
+                javax.net.ssl.SSLContext ssl = javax.net.ssl.SSLContext.getInstance("TLS");
+                ssl.init(kmf.getKeyManagers(), null, null);
+                b.addHttpsListener(tlsPort, "0.0.0.0", ssl);
+                System.out.println("Voice AI Local (TLS): https://0.0.0.0:" + tlsPort);
+            } catch (Exception e) {
+                System.err.println("TLS setup failed, continuing HTTP-only: " + e.getMessage());
+            }
+        }
+
+        b.build().start();
 
         System.out.println("Voice AI Local: http://0.0.0.0:" + PORT);
         System.out.println("LLM: " + LLM_URL);
@@ -80,6 +105,8 @@ public class VoiceServer {
             byte[] data = Files.readAllBytes(p);
             String ct = path.endsWith(".html") ? "text/html; charset=utf-8"
                     : path.endsWith(".js") ? "application/javascript; charset=utf-8"
+                    : path.endsWith(".json") ? "application/manifest+json; charset=utf-8"
+                    : path.endsWith(".svg") ? "image/svg+xml"
                     : "text/css; charset=utf-8";
             ex.getResponseHeaders().put(Headers.CONTENT_TYPE, ct);
             ex.getResponseHeaders().put(Headers.CACHE_CONTROL, "no-cache, no-store, must-revalidate");
@@ -132,6 +159,7 @@ public class VoiceServer {
         final ByteArrayOutputStream audioBuf = new ByteArrayOutputStream();
         volatile boolean inAudio = false;
         String mode = "chat";
+        String difficulty = "";   // "", A1, A2, B1, B2 — adjusts language complexity
         // Current Piper TTS process, so interrupt can kill in-flight speech.
         volatile Process ttsProc = null;
         // Monotonic id for ordering streamed audio chunks on the client.
@@ -150,17 +178,39 @@ public class VoiceServer {
             return "teacher".equals(mode) ? "en" : STT_LANG;
         }
 
+        // Adds a CEFR-level instruction so replies match the learner's level.
+        String difficultyClause() {
+            switch (difficulty) {
+                case "A1": return "\nUse very simple English (CEFR A1): short sentences, basic words.";
+                case "A2": return "\nUse simple English (CEFR A2): common words, short clear sentences.";
+                case "B1": return "\nUse intermediate English (CEFR B1): everyday vocabulary, moderate length.";
+                case "B2": return "\nUse upper-intermediate English (CEFR B2): richer vocabulary is fine.";
+                default:   return "";
+            }
+        }
+
         void handle(JsonNode n) {
             String type = n.path("type").asText("");
             switch (type) {
                 case "config":
                     mode = n.path("mode").asText("chat");
+                    difficulty = n.path("difficulty").asText("");
                     send(event("status", "mode=" + mode));
                     break;
                 case "text":
                 case "transcript":
                     String text = n.path("text").asText("").trim();
                     if (!text.isEmpty()) ask(text);
+                    break;
+                case "translate":
+                    translate(n.path("text").asText("").trim());
+                    break;
+                case "speak":
+                    // Re-speak arbitrary text at a given speed (repeat-slower / TTS
+                    // for words). speed>1 = slower. Optional "id" echoed back.
+                    reSpeak(n.path("text").asText("").trim(),
+                            n.path("speed").asDouble(1.0),
+                            n.path("id").asInt(-1));
                     break;
                 case "interrupt":
                     cancelled.set(true);
@@ -215,7 +265,7 @@ public class VoiceServer {
         void ask(String user) {
             cancelled.set(false);
             IntentRouter.Result r = IntentRouter.route(user, mode);
-            String instruction = r.systemPrompt;
+            String instruction = r.systemPrompt + difficultyClause();
             history.add(Map.of("role", "user", "content", user));
             trimHistory();
 
@@ -321,7 +371,16 @@ public class VoiceServer {
         }
 
         byte[] ttsWav(String text) throws Exception {
+            return ttsWav(text, 1.0, null);
+        }
+
+        // speed > 1.0 slows speech (Piper length_scale); enVoice overrides the
+        // English Piper voice stem (e.g. "en_US-lessac-medium").
+        byte[] ttsWav(String text, double speed, String enVoice) throws Exception {
             ProcessBuilder pb = new ProcessBuilder(ESPEAK_BIN, "-v", ESPEAK_VOICE, "--stdin", "--stdout");
+            Map<String,String> env = pb.environment();
+            if (speed > 0) env.put("PIPER_LENGTH_SCALE", String.valueOf(speed));
+            if (enVoice != null && !enVoice.isEmpty()) env.put("PIPER_EN_VOICE", enVoice);
             Process p = pb.start();
             ttsProc = p;
             p.getOutputStream().write(text.getBytes(StandardCharsets.UTF_8));
@@ -333,6 +392,52 @@ public class VoiceServer {
             p.waitFor();
             ttsProc = null;
             return wav;
+        }
+
+        // Ask the LLM for a concise Bulgarian translation of a word/phrase and
+        // return it as a "translation" event (does not touch conversation history).
+        void translate(String phrase) {
+            if (phrase.isEmpty()) return;
+            CompletableFuture.runAsync(() -> {
+                try {
+                    String sys = "You are an English→Bulgarian dictionary. Give the most common Bulgarian " +
+                            "translation of the English word or phrase the user sends. Reply with ONLY the " +
+                            "Bulgarian word(s), no quotes, no English, no explanation. " +
+                            "Examples: 'ask' -> питам; 'weather' -> време; 'run' -> тичам.";
+                    List<Map<String,String>> one =
+                            List.of(Map.of("role", "user", "content", phrase));
+                    StringBuilder sb = new StringBuilder();
+                    callLLMStreaming(CHAT_MODEL, sys, one, 0.2, d -> { sb.append(d); return true; });
+                    ObjectNode o = event("translation", "");
+                    o.put("phrase", phrase);
+                    o.put("value", sb.toString().trim());
+                    send(o);
+                } catch (Exception e) {
+                    send(error("Translate: " + e.getMessage()));
+                }
+            });
+        }
+
+        // Re-speak arbitrary text (e.g. slower). Sends a tagged audio_reply so the
+        // client can play it as a one-off without disturbing the main queue.
+        void reSpeak(String text, double speed, int id) {
+            if (text.isEmpty()) return;
+            CompletableFuture.runAsync(() -> {
+                try {
+                    byte[] wav = ttsWav(text, speed, null);
+                    if (wav.length == 0) return;
+                    int seq = audioSeq++;
+                    ObjectNode o = event("audio_reply", "");
+                    o.put("size", wav.length);
+                    o.put("seq", seq);
+                    o.put("oneShot", true);
+                    if (id >= 0) o.put("id", id);
+                    send(o);
+                    WebSockets.sendBinary(ByteBuffer.wrap(wav), channel, null);
+                } catch (Exception e) {
+                    send(error("TTS: " + e.getMessage()));
+                }
+            });
         }
 
         static byte[] pcmToWav(byte[] pcm) {
@@ -360,10 +465,16 @@ public class VoiceServer {
         // false to stop early (e.g. on interrupt). Uses OpenAI-style SSE.
         void callLLMStreaming(String model, String system, List<Map<String,String>> hist,
                               java.util.function.Predicate<String> onDelta) throws Exception {
+            callLLMStreaming(model, system, hist, 0.7, onDelta);
+        }
+
+        void callLLMStreaming(String model, String system, List<Map<String,String>> hist,
+                              double temperature,
+                              java.util.function.Predicate<String> onDelta) throws Exception {
             ObjectNode body = JSON.createObjectNode();
             body.put("model", model);
             body.put("stream", true);
-            body.put("temperature", 0.7);
+            body.put("temperature", temperature);
             body.put("max_tokens", MAX_TOKENS);
             ObjectNode kwargs = body.putObject("chat_template_kwargs");
             kwargs.put("enable_thinking", false);

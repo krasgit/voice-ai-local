@@ -16,6 +16,8 @@
       <select id="mode" title="Conversation mode">
         <option value="chat">General</option>
         <option value="teacher">English Teacher</option>
+        <option value="practice">Pronunciation</option>
+        <option value="drill">Grammar drill</option>
       </select>
       <select id="level" title="English level (CEFR)">
         <option value="">Level: auto</option>
@@ -37,6 +39,33 @@
   </div>
 
   <section id="chat" aria-live="polite"></section>
+
+  <!-- Pronunciation practice panel -->
+  <div id="practicePanel" class="learn-panel hidden">
+    <div class="lp-row">
+      <button id="pracNext" type="button">▶ New phrase</button>
+      <button id="pracHear" type="button">🔊 Hear</button>
+      <button id="pracSlow" type="button">🐢 Slower</button>
+      <button id="pracRec" type="button">🎙 Record</button>
+    </div>
+    <div id="pracTarget" class="lp-target">Press “New phrase” to start.</div>
+    <div id="pracResult" class="lp-result"></div>
+  </div>
+
+  <!-- Grammar drill panel -->
+  <div id="drillPanel" class="learn-panel hidden">
+    <div class="lp-row">
+      <button id="drillNext" type="button">▶ New exercise</button>
+      <span id="drillTopic" class="lp-topic"></span>
+    </div>
+    <div id="drillQuestion" class="lp-target">Press “New exercise” to start.</div>
+    <form id="drillForm" class="lp-answer">
+      <input id="drillInput" autocomplete="off" placeholder="Your answer…">
+      <button type="submit">Check</button>
+      <button id="drillRec" type="button">🎙</button>
+    </form>
+    <div id="drillResult" class="lp-result"></div>
+  </div>
 
   <div id="latency" class="latency"></div>
 

@@ -54,7 +54,22 @@ button:active{transform:scale(.97)}
 
 .latency{color:#666;font-size:12px;text-align:right;min-height:16px}
 
-/* settings panel */
+/* learning panels (pronunciation / grammar) */
+.learn-panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  padding:14px;margin:12px 0;display:flex;flex-direction:column;gap:12px}
+.learn-panel.hidden{display:none}
+.lp-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.lp-target{font-size:20px;line-height:1.5;padding:8px 4px;min-height:32px}
+.lp-topic{color:var(--muted);font-size:13px}
+.lp-answer{display:flex;gap:8px}
+.lp-answer input{flex:1}
+.lp-result{font-size:16px;min-height:24px}
+.lp-result .score{font-weight:600}
+.wok{color:#3ddc97}      /* correctly said word */
+.wbad{color:#e5534b;text-decoration:underline}  /* missed/wrong word */
+.verdict-ok{color:#3ddc97}
+.verdict-bad{color:#e5a04b}
+.lp-row button.talking, .lp-answer button.talking{background:var(--accent);border-color:var(--accent);color:#fff}/* settings panel */
 .panel{position:fixed;inset:0;z-index:55;background:#000a;display:grid;place-items:center}
 .panel.hidden{display:none}
 .panel-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;

@@ -160,6 +160,8 @@ public class VoiceServer {
         volatile boolean inAudio = false;
         String mode = "chat";
         String difficulty = "";   // "", A1, A2, B1, B2 — adjusts language complexity
+        String practiceTarget = "";  // current pronunciation target phrase
+        String drillAnswer = "";     // hidden expected answer for the current drill
         // Current Piper TTS process, so interrupt can kill in-flight speech.
         volatile Process ttsProc = null;
         // Monotonic id for ordering streamed audio chunks on the client.
@@ -172,10 +174,10 @@ public class VoiceServer {
             while (history.size() > MAX_HISTORY) history.remove(0);
         }
 
-        // English Teacher mode expects English speech; other modes use the
-        // configured default (STT_LANG, "bg" by default).
+        // Teacher / practice / drill modes expect English speech.
         String sttLang() {
-            return "teacher".equals(mode) ? "en" : STT_LANG;
+            return (mode.equals("teacher") || mode.equals("practice") || mode.equals("drill"))
+                    ? "en" : STT_LANG;
         }
 
         // Adds a CEFR-level instruction so replies match the learner's level.
@@ -200,10 +202,25 @@ public class VoiceServer {
                 case "text":
                 case "transcript":
                     String text = n.path("text").asText("").trim();
-                    if (!text.isEmpty()) ask(text);
+                    if (text.isEmpty()) break;
+                    if (mode.equals("practice") && !practiceTarget.isEmpty()) scorePronunciation(text);
+                    else if (mode.equals("drill") && !drillAnswer.isEmpty()) drillCheck(text);
+                    else ask(text);
                     break;
                 case "translate":
                     translate(n.path("text").asText("").trim());
+                    break;
+                case "practice_next":
+                    practiceNext();
+                    break;
+                case "practice_repeat":
+                    if (!practiceTarget.isEmpty()) reSpeak(practiceTarget, n.path("speed").asDouble(1.0), -1);
+                    break;
+                case "drill_next":
+                    drillNext();
+                    break;
+                case "drill_answer":
+                    drillCheck(n.path("text").asText("").trim());
                     break;
                 case "speak":
                     // Re-speak arbitrary text at a given speed (repeat-slower / TTS
@@ -255,7 +272,13 @@ public class VoiceServer {
                         return;
                     }
                     send(event("transcript", text));
-                    ask(text);
+                    if (mode.equals("practice") && !practiceTarget.isEmpty()) {
+                        scorePronunciation(text);
+                    } else if (mode.equals("drill") && !drillAnswer.isEmpty()) {
+                        drillCheck(text);
+                    } else {
+                        ask(text);
+                    }
                 } catch (Exception e) {
                     send(error("STT: " + e.getMessage()));
                 }
@@ -438,6 +461,121 @@ public class VoiceServer {
                     send(error("TTS: " + e.getMessage()));
                 }
             });
+        }
+
+        // ---- Pronunciation practice ----
+        // Generate a target phrase for the learner's level, store it, speak it.
+        void practiceNext() {
+            CompletableFuture.runAsync(() -> {
+                try {
+                    String lvl = difficulty.isEmpty() ? "A2" : difficulty;
+                    String sys = "Generate ONE short English sentence for pronunciation practice at CEFR " +
+                            lvl + " level (4-9 words). Reply with ONLY the sentence, no quotes, no extra text.";
+                    StringBuilder sb = new StringBuilder();
+                    callLLMStreaming(CHAT_MODEL, sys,
+                            List.of(Map.of("role","user","content","Give me a sentence.")), 0.8,
+                            d -> { sb.append(d); return true; });
+                    practiceTarget = sb.toString().replaceAll("\\s+", " ").trim()
+                            .replaceAll("^[\"']|[\"']$", "");
+                    if (practiceTarget.isEmpty()) practiceTarget = "The quick brown fox jumps over the lazy dog.";
+                    ObjectNode o = event("practice_target", practiceTarget);
+                    send(o);
+                    reSpeak(practiceTarget, 1.0, -1);   // speak the target
+                } catch (Exception e) {
+                    send(error("Practice: " + e.getMessage()));
+                }
+            });
+        }
+
+        // Compare what the user said against the target, word by word.
+        void scorePronunciation(String heard) {
+            String[] target = practiceTarget.toLowerCase(Locale.ROOT)
+                    .replaceAll("[^a-z0-9'\\s]", "").trim().split("\\s+");
+            java.util.Set<String> heardSet = new java.util.HashSet<>(Arrays.asList(
+                    heard.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9'\\s]", "").trim().split("\\s+")));
+            var words = JSON.createArrayNode();
+            int ok = 0;
+            for (String w : target) {
+                if (w.isEmpty()) continue;
+                boolean correct = heardSet.contains(w);
+                if (correct) ok++;
+                ObjectNode wo = JSON.createObjectNode();
+                wo.put("word", w);
+                wo.put("ok", correct);
+                words.add(wo);
+            }
+            int total = words.size();
+            int score = total == 0 ? 0 : (int) Math.round(100.0 * ok / total);
+            ObjectNode o = event("practice_result", "");
+            o.put("heard", heard);
+            o.put("target", practiceTarget);
+            o.put("score", score);
+            o.set("words", words);
+            send(o);
+        }
+
+        // ---- Grammar drill ----
+        // Generate an exercise (with a hidden expected answer) for the level.
+        void drillNext() {
+            CompletableFuture.runAsync(() -> {
+                try {
+                    String lvl = difficulty.isEmpty() ? "A2" : difficulty;
+                    String sys = "Create ONE short English grammar exercise for CEFR " + lvl + ". " +
+                            "Either a fill-in-the-blank or a 'correct the mistake' task. " +
+                            "Return STRICT JSON only: {\"question\":\"...\",\"answer\":\"...\",\"topic\":\"...\"}. " +
+                            "Keep the question one line. No extra text.";
+                    StringBuilder sb = new StringBuilder();
+                    callLLMStreaming(CHAT_MODEL, sys,
+                            List.of(Map.of("role","user","content","New exercise.")), 0.8,
+                            d -> { sb.append(d); return true; });
+                    String raw = sb.toString().trim();
+                    int a = raw.indexOf('{'), b = raw.lastIndexOf('}');
+                    String q = "", topic = "";
+                    if (a >= 0 && b > a) {
+                        try {
+                            JsonNode j = JSON.readTree(raw.substring(a, b + 1));
+                            q = j.path("question").asText("");
+                            drillAnswer = j.path("answer").asText("");
+                            topic = j.path("topic").asText("");
+                        } catch (Exception ignore) {}
+                    }
+                    if (q.isEmpty()) { q = "Fill in: She ___ (go) to school every day."; drillAnswer = "goes"; topic = "present simple"; }
+                    ObjectNode o = event("drill_question", q);
+                    o.put("topic", topic);
+                    send(o);
+                } catch (Exception e) {
+                    send(error("Drill: " + e.getMessage()));
+                }
+            });
+        }
+
+        // Check the user's answer against the expected one, with a short explanation.
+        void drillCheck(String userAnswer) {
+            if (userAnswer.isEmpty()) return;
+            final String expected = drillAnswer;
+            CompletableFuture.runAsync(() -> {
+                try {
+                    boolean exact = normalize(userAnswer).equals(normalize(expected));
+                    String sys = "You are an English teacher. The expected answer is: \"" + expected + "\". " +
+                            "The student answered: \"" + userAnswer + "\". Say if the student is correct. " +
+                            "Reply with a short verdict (Correct/Not quite), the correct answer, and a one-line " +
+                            "explanation in Bulgarian. Keep it under 3 lines.";
+                    StringBuilder sb = new StringBuilder();
+                    callLLMStreaming(CHAT_MODEL, sys,
+                            List.of(Map.of("role","user","content","Check my answer.")), 0.3,
+                            d -> { sb.append(d); return true; });
+                    ObjectNode o = event("drill_result", sb.toString().trim());
+                    o.put("correct", exact);
+                    o.put("expected", expected);
+                    send(o);
+                } catch (Exception e) {
+                    send(error("Drill: " + e.getMessage()));
+                }
+            });
+        }
+
+        String normalize(String s) {
+            return s.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9']", "").trim();
         }
 
         static byte[] pcmToWav(byte[] pcm) {

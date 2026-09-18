@@ -36,6 +36,24 @@ const voMute = document.querySelector("#voMute");
 const voPtt = document.querySelector("#voPtt");
 const voInterrupt = document.querySelector("#voInterrupt");
 
+// Learning panels
+const practicePanel = document.querySelector("#practicePanel");
+const pracNext = document.querySelector("#pracNext");
+const pracHear = document.querySelector("#pracHear");
+const pracSlow = document.querySelector("#pracSlow");
+const pracRec = document.querySelector("#pracRec");
+const pracTarget = document.querySelector("#pracTarget");
+const pracResult = document.querySelector("#pracResult");
+
+const drillPanel = document.querySelector("#drillPanel");
+const drillNextBtn = document.querySelector("#drillNext");
+const drillTopic = document.querySelector("#drillTopic");
+const drillQuestion = document.querySelector("#drillQuestion");
+const drillForm = document.querySelector("#drillForm");
+const drillInput = document.querySelector("#drillInput");
+const drillRec = document.querySelector("#drillRec");
+const drillResult = document.querySelector("#drillResult");
+
 // ---------- Settings (persisted) ----------
 const SET_KEY = "voiceai.settings.v1";
 const settingsState = Object.assign(
@@ -266,6 +284,23 @@ function handleMsg(m){
       break;
     case "translation":
       showTranslation(m.phrase, m.value);
+      break;
+    case "practice_target":
+      practiceTarget = m.value;
+      pracTarget.textContent = m.value;
+      pracResult.innerHTML = "";
+      break;
+    case "practice_result":
+      renderPracticeResult(m);
+      break;
+    case "drill_question":
+      drillQuestion.textContent = m.value;
+      drillTopic.textContent = m.topic ? ("topic: " + m.topic) : "";
+      drillResult.innerHTML = "";
+      drillInput.value = "";
+      break;
+    case "drill_result":
+      drillResult.innerHTML = `<span class="${m.correct?'verdict-ok':'verdict-bad'}">${escapeHtml(m.value)}</span>`;
       break;
     case "interrupted":
       responseComplete = true;
@@ -589,7 +624,18 @@ voPtt.addEventListener("touchend", e => { e.preventDefault(); pttStop(); }, {pas
 voInterrupt.onclick = () => { stopPlayback(); send({type:"interrupt"}); if (voiceMode && !micMuted && !settingsState.ptt) startListening(); };
 
 // ---------- Header controls ----------
-mode.onchange = () => { sendConfig(); voMode.textContent = mode.options[mode.selectedIndex].text; };
+mode.onchange = () => { sendConfig(); voMode.textContent = mode.options[mode.selectedIndex].text; updatePanels(); };
+
+// Show the learning panel that matches the current mode (and hide the chat/voice
+// affordances that don't apply). Chat is shown for chat/teacher.
+function updatePanels(){
+  const m = mode.value;
+  practicePanel.classList.toggle("hidden", m !== "practice");
+  drillPanel.classList.toggle("hidden", m !== "drill");
+  // Voice-chat button is only meaningful in conversational modes.
+  voiceBtn.classList.toggle("hidden", m === "practice" || m === "drill");
+}
+updatePanels();
 level.onchange = () => { settingsState.level = level.value; saveSettings(); sendConfig(); };
 
 form.onsubmit = e => {
@@ -625,6 +671,59 @@ document.addEventListener("keydown", e => {
   if (e.key === "Escape"){ if (voiceMode) closeVoice(); settings.classList.add("hidden"); }
 });
 window.addEventListener("beforeunload", () => teardownAudio());
+
+// ---------- Pronunciation practice + Grammar drill ----------
+let practiceTarget = "";
+
+function renderPracticeResult(m){
+  practiceTarget = m.target || practiceTarget;
+  const frag = document.createElement("div");
+  const scoreEl = document.createElement("span");
+  scoreEl.className = "score";
+  scoreEl.textContent = `Score: ${m.score}%  `;
+  frag.appendChild(scoreEl);
+  (m.words || []).forEach(w => {
+    const s = document.createElement("span");
+    s.className = w.ok ? "wok" : "wbad";
+    s.textContent = w.word + " ";
+    frag.appendChild(s);
+  });
+  const heard = document.createElement("div");
+  heard.style.color = "#888"; heard.style.fontSize = "13px"; heard.style.marginTop = "6px";
+  heard.textContent = "heard: " + (m.heard || "");
+  pracResult.innerHTML = "";
+  pracResult.append(frag, heard);
+}
+
+// Simple one-shot panel recording (reuses the capture pipeline). Toggle with
+// the mic button; sends audio_start ... chunks ... audio_end, server scores.
+let panelRecording = false;
+function panelRecStart(btn){
+  ensureAudio().then(() => {
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    panelRecording = true; capturing = true; micMuted = false;
+    send({type:"audio_start"});
+    if (btn) btn.classList.add("talking");
+    setStatus("recording… press again to stop");
+  }).catch(err => addSystem("Microphone error: " + err.message));
+}
+function panelRecStop(btn){
+  if (!panelRecording) return;
+  panelRecording = false; capturing = false;
+  send({type:"audio_end"});
+  if (btn) btn.classList.remove("talking");
+  setStatus("scoring…");
+}
+function panelRecToggle(btn){ panelRecording ? panelRecStop(btn) : panelRecStart(btn); }
+
+pracNext.onclick = () => { pracResult.innerHTML = ""; send({type:"practice_next"}); setStatus("preparing…"); };
+pracHear.onclick = () => { if (practiceTarget) send({type:"practice_repeat", speed:1.0}); };
+pracSlow.onclick = () => { if (practiceTarget) send({type:"practice_repeat", speed:1.4}); };
+pracRec.onclick = () => panelRecToggle(pracRec);
+
+drillNextBtn.onclick = () => { drillResult.innerHTML = ""; send({type:"drill_next"}); setStatus("preparing…"); };
+drillForm.onsubmit = e => { e.preventDefault(); const t = drillInput.value.trim(); if (t) send({type:"drill_answer", text:t}); };
+drillRec.onclick = () => panelRecToggle(drillRec);
 
 // ---------- PWA service worker ----------
 if ("serviceWorker" in navigator){

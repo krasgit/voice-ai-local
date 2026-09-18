@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Voice AI Local</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>Voice AI Local</h1>
+    <span id="status">connecting…</span>
+  </header>
+
+  <section id="chat"></section>
+
+  <section class="controls">
+    <select id="mode">
+      <option value="chat">General conversation</option>
+      <option value="teacher">English Teacher</option>
+    </select>
+    <button id="mic">🎙 Start microphone</button>
+    <button id="stop">⏹ Stop / Interrupt</button>
+    <label><input type="checkbox" id="auto" checked> Hands-free</label>
+  </section>
+
+  <form id="textForm">
+    <input id="text" autocomplete="off" placeholder="Write or speak…">
+    <button>Send</button>
+  </form>
+
+  <p class="hint">
+    Local pipeline: Browser → WebSocket → Java → whisper.cpp (STT) → intent router → llama.cpp → espeak-ng (TTS).
+  </p>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

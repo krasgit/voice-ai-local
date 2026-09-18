@@ -1,0 +1,32 @@
+# Maven build output
+server/target/
+target/
+
+# Java
+*.class
+*.jar
+!**/src/**/*.jar
+
+# Models (large binaries — keep out of git)
+models/*
+!models/README.txt
+*.gguf
+*.bin
+
+# Audio artifacts
+*.wav
+*.pcm
+
+# Env / secrets
+.env
+*.local
+
+# Editor / OS
+.idea/
+*.iml
+.vscode/
+.DS_Store
+*.swp
+
+# Stray dash-named file
+/-

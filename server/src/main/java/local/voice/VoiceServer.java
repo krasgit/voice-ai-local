@@ -162,6 +162,8 @@ public class VoiceServer {
         String difficulty = "";   // "", A1, A2, B1, B2 — adjusts language complexity
         String practiceTarget = "";  // current pronunciation target phrase
         String drillAnswer = "";     // hidden expected answer for the current drill
+        String dictationTarget = ""; // hidden dictation sentence (heard, not shown)
+        String roleplayPrompt = "";  // active role-play scenario system prompt
         // Current Piper TTS process, so interrupt can kill in-flight speech.
         volatile Process ttsProc = null;
         // Monotonic id for ordering streamed audio chunks on the client.
@@ -174,10 +176,13 @@ public class VoiceServer {
             while (history.size() > MAX_HISTORY) history.remove(0);
         }
 
-        // Teacher / practice / drill modes expect English speech.
+        // Teacher / practice / drill / dictation / roleplay expect English speech.
         String sttLang() {
-            return (mode.equals("teacher") || mode.equals("practice") || mode.equals("drill"))
-                    ? "en" : STT_LANG;
+            switch (mode) {
+                case "teacher": case "practice": case "drill":
+                case "dictation": case "roleplay": return "en";
+                default: return STT_LANG;
+            }
         }
 
         // Adds a CEFR-level instruction so replies match the learner's level.
@@ -205,6 +210,7 @@ public class VoiceServer {
                     if (text.isEmpty()) break;
                     if (mode.equals("practice") && !practiceTarget.isEmpty()) scorePronunciation(text);
                     else if (mode.equals("drill") && !drillAnswer.isEmpty()) drillCheck(text);
+                    else if (mode.equals("dictation") && !dictationTarget.isEmpty()) dictationCheck(text);
                     else ask(text);
                     break;
                 case "translate":
@@ -221,6 +227,18 @@ public class VoiceServer {
                     break;
                 case "drill_answer":
                     drillCheck(n.path("text").asText("").trim());
+                    break;
+                case "dict_next":
+                    dictationNext();
+                    break;
+                case "dict_repeat":
+                    if (!dictationTarget.isEmpty()) reSpeak(dictationTarget, n.path("speed").asDouble(1.0), -1);
+                    break;
+                case "dict_check":
+                    dictationCheck(n.path("text").asText("").trim());
+                    break;
+                case "roleplay_start":
+                    roleplayStart(n.path("scenario").asText("cafe"));
                     break;
                 case "speak":
                     // Re-speak arbitrary text at a given speed (repeat-slower / TTS
@@ -287,19 +305,30 @@ public class VoiceServer {
 
         void ask(String user) {
             cancelled.set(false);
-            IntentRouter.Result r = IntentRouter.route(user, mode);
-            String instruction = r.systemPrompt + difficultyClause();
+            String intent, instruction;
+            boolean reasoning = false;
+            if (mode.equals("roleplay") && !roleplayPrompt.isEmpty()) {
+                intent = "ROLE_PLAY";
+                instruction = roleplayPrompt + difficultyClause();
+            } else {
+                IntentRouter.Result r = IntentRouter.route(user, mode);
+                intent = r.intent;
+                reasoning = r.reasoning;
+                instruction = r.systemPrompt + difficultyClause();
+            }
+            final String fIntent = intent, fInstruction = instruction;
+            final boolean fReasoning = reasoning;
             history.add(Map.of("role", "user", "content", user));
             trimHistory();
 
             CompletableFuture.runAsync(() -> {
                 try {
-                    send(event("intent", r.intent));
-                    String model = r.reasoning ? REASONING_MODEL : CHAT_MODEL;
+                    send(event("intent", fIntent));
+                    String model = fReasoning ? REASONING_MODEL : CHAT_MODEL;
                     // Stream tokens; flush complete sentences to text + TTS as they arrive.
                     StringBuilder full = new StringBuilder();
                     StringBuilder pending = new StringBuilder();
-                    callLLMStreaming(model, instruction, history, delta -> {
+                    callLLMStreaming(model, fInstruction, history, delta -> {
                         if (cancelled.get()) return false;   // stop reading
                         full.append(delta);
                         pending.append(delta);
@@ -576,6 +605,87 @@ public class VoiceServer {
 
         String normalize(String s) {
             return s.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9']", "").trim();
+        }
+
+        // ---- Dictation (listening) ----
+        // Generate a sentence, speak it, but DO NOT reveal the text.
+        void dictationNext() {
+            CompletableFuture.runAsync(() -> {
+                try {
+                    String lvl = difficulty.isEmpty() ? "A2" : difficulty;
+                    String sys = "Generate ONE natural English sentence for a listening dictation at CEFR " +
+                            lvl + " level (5-12 words). Reply with ONLY the sentence, no quotes.";
+                    StringBuilder sb = new StringBuilder();
+                    callLLMStreaming(CHAT_MODEL, sys,
+                            List.of(Map.of("role","user","content","Give me a sentence.")), 0.8,
+                            d -> { sb.append(d); return true; });
+                    dictationTarget = sb.toString().replaceAll("\\s+", " ").trim()
+                            .replaceAll("^[\"']|[\"']$", "");
+                    if (dictationTarget.isEmpty()) dictationTarget = "She usually drinks coffee in the morning.";
+                    send(event("dict_ready", "")); // signal a new item (text stays hidden)
+                    reSpeak(dictationTarget, 1.0, -1);
+                } catch (Exception e) {
+                    send(error("Dictation: " + e.getMessage()));
+                }
+            });
+        }
+
+        // Compare typed text against the hidden dictation target, reveal it.
+        void dictationCheck(String typed) {
+            String[] target = dictationTarget.toLowerCase(Locale.ROOT)
+                    .replaceAll("[^a-z0-9'\\s]", "").trim().split("\\s+");
+            java.util.Set<String> typedSet = new java.util.HashSet<>(Arrays.asList(
+                    typed.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9'\\s]", "").trim().split("\\s+")));
+            var words = JSON.createArrayNode();
+            int ok = 0;
+            for (String w : target) {
+                if (w.isEmpty()) continue;
+                boolean correct = typedSet.contains(w);
+                if (correct) ok++;
+                ObjectNode wo = JSON.createObjectNode();
+                wo.put("word", w); wo.put("ok", correct);
+                words.add(wo);
+            }
+            int total = words.size();
+            int score = total == 0 ? 0 : (int) Math.round(100.0 * ok / total);
+            ObjectNode o = event("dict_result", "");
+            o.put("typed", typed);
+            o.put("target", dictationTarget);
+            o.put("score", score);
+            o.set("words", words);
+            send(o);
+        }
+
+        // ---- Role-play (speaking) ----
+        void roleplayStart(String scenario) {
+            String role;
+            switch (scenario) {
+                case "restaurant":
+                    role = "You are a friendly waiter at a restaurant. Stay in character. Greet the customer, " +
+                           "take their order, make small talk. Keep replies to 1-2 short spoken sentences.";
+                    break;
+                case "airport":
+                    role = "You are a check-in agent at an airport. Stay in character. Ask for passport, " +
+                           "destination, luggage. Keep replies to 1-2 short spoken sentences.";
+                    break;
+                case "interview":
+                    role = "You are a job interviewer. Stay in character. Ask common interview questions one at " +
+                           "a time and react to answers. Keep replies to 1-2 short spoken sentences.";
+                    break;
+                case "shopping":
+                    role = "You are a shop assistant in a clothing store. Stay in character. Help the customer " +
+                           "find items, sizes, prices. Keep replies to 1-2 short spoken sentences.";
+                    break;
+                default:
+                    role = "You are a friendly barista at a cafe. Stay in character. Take the order and chat " +
+                           "briefly. Keep replies to 1-2 short spoken sentences.";
+            }
+            roleplayPrompt = "Speak only in English. " + role +
+                    " If the learner makes a big mistake, gently rephrase correctly, then continue. " +
+                    "Never break character or mention that you are an AI.";
+            history.clear();
+            // Kick off the scene with an in-character greeting.
+            ask("(The learner has just arrived. Greet them and start the scene.)");
         }
 
         static byte[] pcmToWav(byte[] pcm) {

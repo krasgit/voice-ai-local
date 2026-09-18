@@ -18,6 +18,8 @@
         <option value="teacher">English Teacher</option>
         <option value="practice">Pronunciation</option>
         <option value="drill">Grammar drill</option>
+        <option value="dictation">Dictation</option>
+        <option value="roleplay">Role-play</option>
       </select>
       <select id="level" title="English level (CEFR)">
         <option value="">Level: auto</option>
@@ -65,6 +67,37 @@
       <button id="drillRec" type="button">🎙</button>
     </form>
     <div id="drillResult" class="lp-result"></div>
+  </div>
+
+  <!-- Dictation panel (listening) -->
+  <div id="dictPanel" class="learn-panel hidden">
+    <div class="lp-row">
+      <button id="dictNext" type="button">▶ New sentence</button>
+      <button id="dictHear" type="button">🔊 Hear again</button>
+      <button id="dictSlow" type="button">🐢 Slower</button>
+    </div>
+    <div class="lp-target" id="dictHint">Press “New sentence”, listen, then type what you hear.</div>
+    <form id="dictForm" class="lp-answer">
+      <input id="dictInput" autocomplete="off" placeholder="Type what you heard…">
+      <button type="submit">Check</button>
+    </form>
+    <div id="dictResult" class="lp-result"></div>
+  </div>
+
+  <!-- Role-play panel (speaking) -->
+  <div id="rolePanel" class="learn-panel hidden">
+    <div class="lp-row">
+      <select id="roleScenario">
+        <option value="cafe">☕ Cafe (order a drink)</option>
+        <option value="restaurant">🍽 Restaurant</option>
+        <option value="airport">✈ Airport check-in</option>
+        <option value="interview">💼 Job interview</option>
+        <option value="shopping">🛍 Clothes shopping</option>
+      </select>
+      <button id="roleStart" type="button">▶ Start scene</button>
+      <button id="roleVoice" type="button">🎙 Voice chat</button>
+    </div>
+    <div class="lp-target" id="roleHint">Pick a scenario and press “Start scene”. Then talk with the mic or type below.</div>
   </div>
 
   <div id="latency" class="latency"></div>

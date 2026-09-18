@@ -54,6 +54,20 @@ const drillInput = document.querySelector("#drillInput");
 const drillRec = document.querySelector("#drillRec");
 const drillResult = document.querySelector("#drillResult");
 
+const dictPanel = document.querySelector("#dictPanel");
+const dictNext = document.querySelector("#dictNext");
+const dictHear = document.querySelector("#dictHear");
+const dictSlow = document.querySelector("#dictSlow");
+const dictHint = document.querySelector("#dictHint");
+const dictForm = document.querySelector("#dictForm");
+const dictInput = document.querySelector("#dictInput");
+const dictResult = document.querySelector("#dictResult");
+
+const rolePanel = document.querySelector("#rolePanel");
+const roleScenario = document.querySelector("#roleScenario");
+const roleStart = document.querySelector("#roleStart");
+const roleVoice = document.querySelector("#roleVoice");
+
 // ---------- Settings (persisted) ----------
 const SET_KEY = "voiceai.settings.v1";
 const settingsState = Object.assign(
@@ -301,6 +315,13 @@ function handleMsg(m){
       break;
     case "drill_result":
       drillResult.innerHTML = `<span class="${m.correct?'verdict-ok':'verdict-bad'}">${escapeHtml(m.value)}</span>`;
+      break;
+    case "dict_ready":
+      dictHint.textContent = "🎧 Listen and type what you hear, then press Check.";
+      dictResult.innerHTML = ""; dictInput.value = ""; dictInput.focus();
+      break;
+    case "dict_result":
+      renderDictResult(m);
       break;
     case "interrupted":
       responseComplete = true;
@@ -632,8 +653,11 @@ function updatePanels(){
   const m = mode.value;
   practicePanel.classList.toggle("hidden", m !== "practice");
   drillPanel.classList.toggle("hidden", m !== "drill");
-  // Voice-chat button is only meaningful in conversational modes.
-  voiceBtn.classList.toggle("hidden", m === "practice" || m === "drill");
+  dictPanel.classList.toggle("hidden", m !== "dictation");
+  rolePanel.classList.toggle("hidden", m !== "roleplay");
+  // Voice-chat button applies to conversational modes (incl. roleplay).
+  const learn = (m === "practice" || m === "drill" || m === "dictation");
+  voiceBtn.classList.toggle("hidden", learn);
 }
 updatePanels();
 level.onchange = () => { settingsState.level = level.value; saveSettings(); sendConfig(); };
@@ -724,6 +748,35 @@ pracRec.onclick = () => panelRecToggle(pracRec);
 drillNextBtn.onclick = () => { drillResult.innerHTML = ""; send({type:"drill_next"}); setStatus("preparing…"); };
 drillForm.onsubmit = e => { e.preventDefault(); const t = drillInput.value.trim(); if (t) send({type:"drill_answer", text:t}); };
 drillRec.onclick = () => panelRecToggle(drillRec);
+
+// Dictation: hear a hidden sentence, type it, reveal + score.
+function renderDictResult(m){
+  const frag = document.createElement("div");
+  const scoreEl = document.createElement("span");
+  scoreEl.className = "score";
+  scoreEl.textContent = `Score: ${m.score}%  `;
+  frag.appendChild(scoreEl);
+  (m.words || []).forEach(w => {
+    const s = document.createElement("span");
+    s.className = w.ok ? "wok" : "wbad";
+    s.textContent = w.word + " ";
+    frag.appendChild(s);
+  });
+  const yours = document.createElement("div");
+  yours.style.color = "#888"; yours.style.fontSize = "13px"; yours.style.marginTop = "6px";
+  yours.textContent = "you typed: " + (m.typed || "");
+  dictResult.innerHTML = "";
+  dictResult.append(frag, yours);
+  dictHint.textContent = "Answer: " + m.target;
+}
+dictNext.onclick = () => { dictResult.innerHTML = ""; dictHint.textContent = "🎧 Listening…"; send({type:"dict_next"}); };
+dictHear.onclick = () => send({type:"dict_repeat", speed:1.0});
+dictSlow.onclick = () => send({type:"dict_repeat", speed:1.4});
+dictForm.onsubmit = e => { e.preventDefault(); const t = dictInput.value.trim(); if (t) send({type:"dict_check", text:t}); };
+
+// Role-play: start a scenario, then use the normal chat/voice flow.
+roleStart.onclick = () => { chat.innerHTML = ""; send({type:"roleplay_start", scenario:roleScenario.value}); setStatus("starting scene…"); };
+roleVoice.onclick = openVoice;
 
 // ---------- PWA service worker ----------
 if ("serviceWorker" in navigator){

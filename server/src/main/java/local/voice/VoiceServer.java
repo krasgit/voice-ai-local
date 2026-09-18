@@ -31,6 +31,10 @@ public class VoiceServer {
             "LLM_URL", "http://127.0.0.1:8081/v1/chat/completions");
     static final String STT_URL = System.getenv().getOrDefault(
             "STT_URL", "http://127.0.0.1:8083/inference");
+    // Whisper language: "bg", "en", or "auto". Default "bg" transcribes Bulgarian
+    // reliably while still handling embedded English words; "auto" is less reliable
+    // for mixed speech. Requires a multilingual model (e.g. ggml-small.bin).
+    static final String STT_LANG = System.getenv().getOrDefault("STT_LANG", "bg");
     static final String ESPEAK_BIN = System.getenv().getOrDefault("ESPEAK_BIN", "espeak-ng");
     static final String ESPEAK_VOICE = System.getenv().getOrDefault("ESPEAK_VOICE", "en-us");
     static final String CHAT_MODEL = System.getenv().getOrDefault("CHAT_MODEL", "qwen3-1.7b");
@@ -129,6 +133,12 @@ public class VoiceServer {
 
         Session(WebSocketChannel c) { channel = c; }
 
+        // English Teacher mode expects English speech; other modes use the
+        // configured default (STT_LANG, "bg" by default).
+        String sttLang() {
+            return "teacher".equals(mode) ? "en" : STT_LANG;
+        }
+
         void handle(JsonNode n) {
             String type = n.path("type").asText("");
             switch (type) {
@@ -218,7 +228,13 @@ public class VoiceServer {
                     "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n" +
                     "Content-Type: audio/wav\r\n\r\n").getBytes(StandardCharsets.UTF_8));
             body.write(wav);
-            body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+            // Language for whisper, mode-aware (teacher=en, else STT_LANG).
+            String fields = "\r\n--" + boundary + "\r\n" +
+                    "Content-Disposition: form-data; name=\"language\"\r\n\r\n" + sttLang() + "\r\n" +
+                    "--" + boundary + "\r\n" +
+                    "Content-Disposition: form-data; name=\"response_format\"\r\n\r\njson\r\n";
+            body.write(fields.getBytes(StandardCharsets.UTF_8));
+            body.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
 
             HttpRequest req = HttpRequest.newBuilder(URI.create(STT_URL))
                     .timeout(Duration.ofMinutes(2))
@@ -353,20 +369,26 @@ public class VoiceServer {
         }
 
         static String base() {
-            return "You are a local voice assistant. Be natural and concise. " +
-                    "The user may mix Bulgarian and English. Preserve technical English terms " +
-                    "when useful. Do not translate everything automatically.";
+            return "You are a local voice assistant for a Bulgarian user who is also learning English. " +
+                    "Be natural and concise. The user may mix Bulgarian and English. " +
+                    "When you write Bulgarian, use correct, natural Bulgarian only — never Russian words or spelling. " +
+                    "When the user explicitly asks to translate a word or phrase (e.g. 'преведи', 'translate', " +
+                    "'какво значи', 'what does X mean'), give a short, accurate dictionary translation first, " +
+                    "then optionally one short example. Do not treat ordinary English words as abbreviations. " +
+                    "Otherwise, do not translate everything automatically; keep useful technical English terms as-is.";
         }
 
         static String chatPrompt() {
-            return base() + "\nReply naturally in the language the user uses. " +
-                    "If Bulgarian and English are mixed, mixed replies are acceptable.";
+            return base() + "\nReply in the language the user uses. " +
+                    "If Bulgarian and English are mixed, a mixed reply is acceptable.";
         }
 
         static String teacherPrompt() {
-            return base() + "\nSpeak mainly in English. If the user makes an important English mistake, " +
-                    "let them finish, give a short correction, explain in Bulgarian when necessary, " +
-                    "then continue naturally. Do not correct every tiny mistake.";
+            return base() + "\nYou are an English teacher. Speak mainly in English. " +
+                    "When the user asks for the meaning or translation of an English word, give the correct " +
+                    "Bulgarian translation clearly (for example: 'ask' = 'питам / моля'), then a short English example. " +
+                    "If the user makes an important English mistake, let them finish, give a short correction, " +
+                    "explain in Bulgarian when necessary, then continue naturally. Do not correct every tiny mistake.";
         }
 
         static String reasoningPrompt() {

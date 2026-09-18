@@ -2,38 +2,54 @@
 <html lang="bg">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Voice AI Local</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="theme-color" content="#0b0b0f">
+  <title>Voice AI</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <main>
   <header>
-    <h1>Voice AI Local</h1>
-    <span id="status">connecting…</span>
+    <h1>Voice AI</h1>
+    <div class="head-right">
+      <select id="mode" title="Conversation mode">
+        <option value="chat">General</option>
+        <option value="teacher">English Teacher</option>
+      </select>
+      <button id="clearBtn" type="button" title="Clear conversation" aria-label="Clear conversation">🗑</button>
+      <button id="ttsBtn" type="button" title="Toggle voice: Piper (server) / Browser" aria-label="Toggle voice">🔊 Piper</button>
+      <span id="status" class="status">connecting…</span>
+    </div>
   </header>
 
-  <section id="chat"></section>
-
-  <section class="controls">
-    <select id="mode">
-      <option value="chat">General conversation</option>
-      <option value="teacher">English Teacher</option>
-    </select>
-    <button id="mic">🎙 Start microphone</button>
-    <button id="stop">⏹ Stop / Interrupt</button>
-    <label><input type="checkbox" id="auto" checked> Hands-free</label>
-  </section>
+  <section id="chat" aria-live="polite"></section>
 
   <form id="textForm">
-    <input id="text" autocomplete="off" placeholder="Write or speak…">
-    <button>Send</button>
+    <input id="text" autocomplete="off" placeholder="Message…">
+    <button id="sendBtn" type="submit" aria-label="Send">➤</button>
+    <button id="voiceBtn" type="button" aria-label="Start voice chat">🎙</button>
   </form>
-
-  <p class="hint">
-    Local pipeline: Browser → WebSocket → Java → whisper.cpp (STT) → intent router → llama.cpp → espeak-ng (TTS).
-  </p>
 </main>
+
+<!-- ChatGPT-style full-screen voice mode -->
+<div id="voiceOverlay" class="voice-overlay hidden" role="dialog" aria-label="Voice chat">
+  <div class="vo-top">
+    <span id="voMode" class="vo-mode">General</span>
+    <button id="voClose" class="vo-icon" aria-label="Close voice chat">✕</button>
+  </div>
+
+  <div class="orb-wrap">
+    <canvas id="orb" width="320" height="320" aria-hidden="true"></canvas>
+    <div id="voState" class="vo-state">Tap the orb and speak</div>
+    <div id="voCaption" class="vo-caption"></div>
+  </div>
+
+  <div class="vo-controls">
+    <button id="voMute" class="vo-btn" aria-label="Mute microphone">🎙</button>
+    <button id="voInterrupt" class="vo-btn primary" aria-label="Interrupt">⏹</button>
+  </div>
+</div>
+
 <script src="/app.js"></script>
 </body>
 </html>

@@ -1,0 +1,7 @@
+.git
+server/target
+models/*.gguf
+models/*.bin
+**/*.log
+*.tar.gz
+.DS_Store

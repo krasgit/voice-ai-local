@@ -1,0 +1,18 @@
+services:
+  voice-ai-local:
+    build: .
+    image: voice-ai-local
+    container_name: voice-ai-local
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount the directory that holds your GGUF chat model.
+      - ${MODELS_DIR:-./models}:/models:ro
+    environment:
+      # Point this at your model file *inside the container* (under /models).
+      LLM_MODEL: ${LLM_MODEL:-/models/model.gguf}
+      # Optional tuning:
+      # LLM_CTX: "4096"
+      # LLM_THREADS: "8"
+      MAX_TOKENS: "256"
+    restart: unless-stopped

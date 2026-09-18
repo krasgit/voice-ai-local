@@ -199,34 +199,51 @@ function handleMsg(m){
       break;
     case "audio_reply":
       if (!serverTTSActive()){ if (voiceMode) setVState(State.SPEAKING); break; }
+      // A new WAV chunk is coming (one per sentence). Collect its binary body.
       expectAudioSize = m.size || 0; audioBuf = [];
       if (voiceMode) setVState(State.SPEAKING);
       break;
     case "audio_done":
-      if (serverTTSActive()) afterSpeaking();
+      // With streaming there is no single audio_done per chunk; playback queue
+      // drives afterSpeaking() when the last chunk finishes.
       break;
   }
 }
 
-// ---------- Server WAV playback (fallback path) ----------
+// ---------- Server WAV playback: sequential queue of streamed chunks ----------
 let expectAudioSize = 0, audioBuf = [], currentAudio = null;
+let audioQueue = [], playing = false;
+
 function handleAudio(buf){
   audioBuf.push(new Uint8Array(buf));
   const total = audioBuf.reduce((n,b)=>n+b.length,0);
   if (expectAudioSize > 0 && total >= expectAudioSize){
     const blob = new Blob(audioBuf, {type:"audio/wav"});
-    const url = URL.createObjectURL(blob);
-    currentAudio = new Audio(url);
-    currentAudio.crossOrigin = "anonymous";
-    attachPlaybackAnalyser(currentAudio);
-    currentAudio.onended = () => {
-      URL.revokeObjectURL(url); currentAudio = null;
-      stopPlaybackAnalyser(); afterSpeaking();
-    };
-    if (voiceMode) setVState(State.SPEAKING);
-    currentAudio.play();
+    audioQueue.push(blob);
     expectAudioSize = 0; audioBuf = [];
+    if (!playing) playNext();
   }
+}
+
+function playNext(){
+  if (!audioQueue.length){
+    playing = false;
+    stopPlaybackAnalyser();
+    afterSpeaking();          // whole response finished speaking
+    return;
+  }
+  playing = true;
+  const blob = audioQueue.shift();
+  const url = URL.createObjectURL(blob);
+  currentAudio = new Audio(url);
+  currentAudio.crossOrigin = "anonymous";
+  attachPlaybackAnalyser(currentAudio);
+  currentAudio.onended = currentAudio.onerror = () => {
+    URL.revokeObjectURL(url); currentAudio = null;
+    playNext();               // chain to next sentence chunk
+  };
+  if (voiceMode) setVState(State.SPEAKING);
+  currentAudio.play().catch(() => playNext());
 }
 
 // Feed server WAV playback through an analyser so the orb reflects the
@@ -236,21 +253,27 @@ function attachPlaybackAnalyser(audioEl){
   try{
     playCtx = playCtx || new (window.AudioContext || window.webkitAudioContext)();
     if (playCtx.state === "suspended") playCtx.resume();
+    // Release any previous element's source node first.
+    try{ if (playSrcNode) playSrcNode.disconnect(); }catch(e){}
     playSrcNode = playCtx.createMediaElementSource(audioEl);
-    playAnalyser = playCtx.createAnalyser();
-    playAnalyser.fftSize = 256;
+    if (!playAnalyser){
+      playAnalyser = playCtx.createAnalyser();
+      playAnalyser.fftSize = 256;
+      playAnalyser.connect(playCtx.destination);
+    }
     playSrcNode.connect(playAnalyser);
-    playAnalyser.connect(playCtx.destination);
     const data = new Uint8Array(playAnalyser.frequencyBinCount);
-    const tick = () => {
-      if (!playAnalyser) return;
-      playAnalyser.getByteTimeDomainData(data);
-      let sum = 0;
-      for (let i=0;i<data.length;i++){ const d=(data[i]-128)/128; sum += d*d; }
-      aiLevel = Math.min(1, Math.sqrt(sum/data.length) * 3);
-      playRAF = requestAnimationFrame(tick);
-    };
-    tick();
+    if (!playRAF){
+      const tick = () => {
+        if (!playAnalyser) return;
+        playAnalyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let i=0;i<data.length;i++){ const d=(data[i]-128)/128; sum += d*d; }
+        aiLevel = Math.min(1, Math.sqrt(sum/data.length) * 3);
+        playRAF = requestAnimationFrame(tick);
+      };
+      tick();
+    }
   }catch(e){ /* fall back to no visualization */ }
 }
 function stopPlaybackAnalyser(){
@@ -262,9 +285,11 @@ function stopPlaybackAnalyser(){
 function stopPlayback(){
   if ("speechSynthesis" in window) speechSynthesis.cancel();
   stopAiSim();
+  audioQueue = [];
+  playing = false;
+  if (currentAudio){ try{ currentAudio.pause(); currentAudio.onended = null; }catch(e){} currentAudio = null; }
   stopPlaybackAnalyser();
   speakingCount = 0;
-  if (currentAudio){ try{ currentAudio.pause(); }catch(e){} currentAudio = null; }
   expectAudioSize = 0; audioBuf = [];
 }
 

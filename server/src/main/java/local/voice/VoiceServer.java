@@ -40,6 +40,8 @@ public class VoiceServer {
     static final String CHAT_MODEL = System.getenv().getOrDefault("CHAT_MODEL", "qwen3-1.7b");
     static final String REASONING_MODEL = System.getenv().getOrDefault("REASONING_MODEL", "qwen3-14b");
     static final int MAX_TOKENS = Integer.parseInt(System.getenv().getOrDefault("MAX_TOKENS", "256"));
+    // Keep at most this many past messages (user+assistant) in the context window.
+    static final int MAX_HISTORY = Integer.parseInt(System.getenv().getOrDefault("MAX_HISTORY", "12"));
 
     static final HttpClient HTTP = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10)).build();
@@ -130,8 +132,17 @@ public class VoiceServer {
         final ByteArrayOutputStream audioBuf = new ByteArrayOutputStream();
         volatile boolean inAudio = false;
         String mode = "chat";
+        // Current Piper TTS process, so interrupt can kill in-flight speech.
+        volatile Process ttsProc = null;
+        // Monotonic id for ordering streamed audio chunks on the client.
+        int audioSeq = 0;
 
         Session(WebSocketChannel c) { channel = c; }
+
+        // Drop old turns so the context window stays bounded.
+        void trimHistory() {
+            while (history.size() > MAX_HISTORY) history.remove(0);
+        }
 
         // English Teacher mode expects English speech; other modes use the
         // configured default (STT_LANG, "bg" by default).
@@ -153,6 +164,8 @@ public class VoiceServer {
                     break;
                 case "interrupt":
                     cancelled.set(true);
+                    Process pr = ttsProc;
+                    if (pr != null) pr.destroyForcibly();
                     send(event("interrupted", "generation cancelled"));
                     break;
                 case "audio_start":
@@ -204,21 +217,64 @@ public class VoiceServer {
             IntentRouter.Result r = IntentRouter.route(user, mode);
             String instruction = r.systemPrompt;
             history.add(Map.of("role", "user", "content", user));
+            trimHistory();
 
             CompletableFuture.runAsync(() -> {
                 try {
                     send(event("intent", r.intent));
                     String model = r.reasoning ? REASONING_MODEL : CHAT_MODEL;
-                    String reply = callLLM(model, instruction, history);
+                    // Stream tokens; flush complete sentences to text + TTS as they arrive.
+                    StringBuilder full = new StringBuilder();
+                    StringBuilder pending = new StringBuilder();
+                    callLLMStreaming(model, instruction, history, delta -> {
+                        if (cancelled.get()) return false;   // stop reading
+                        full.append(delta);
+                        pending.append(delta);
+                        flushSentences(pending, false);
+                        return true;
+                    });
                     if (cancelled.get()) return;
-                    history.add(Map.of("role", "assistant", "content", reply));
-                    sendTextStreaming(reply);
+                    flushSentences(pending, true);           // flush remainder
+                    String reply = full.toString().trim();
+                    if (!reply.isEmpty()) {
+                        history.add(Map.of("role", "assistant", "content", reply));
+                        trimHistory();
+                    }
                     send(event("done", ""));
-                    speak(reply);
                 } catch (Exception e) {
                     if (!cancelled.get()) send(error("LLM: " + e.getMessage()));
                 }
             });
+        }
+
+        // Split buffered text on sentence boundaries; emit + speak each complete
+        // sentence. When force is true, flush whatever remains.
+        // Avoids splitting on list numbers ("1.") and merges very short fragments.
+        void flushSentences(StringBuilder buf, boolean force) {
+            java.util.regex.Matcher m =
+                java.util.regex.Pattern.compile("(.+?[.!?…。！？])(\\s+|$)", java.util.regex.Pattern.DOTALL)
+                    .matcher(buf);
+            int consumed = 0;   // chars consumed up to and including last emitted sentence
+            while (m.find()) {
+                String sentence = m.group(1).trim();
+                // Don't emit a lone list marker like "1." or "2)"; keep buffering.
+                if (sentence.matches("\\d+[.)]")) break;
+                // Too short to be a useful TTS chunk unless forcing a flush.
+                if (!force && sentence.replaceAll("[^\\p{L}]", "").length() < 3) break;
+                if (!sentence.isEmpty()) emitSentence(sentence);
+                consumed = m.end();
+            }
+            if (consumed > 0) buf.delete(0, consumed);
+            if (force && buf.toString().trim().length() > 0) {
+                emitSentence(buf.toString().trim());
+                buf.setLength(0);
+            }
+        }
+
+        void emitSentence(String sentence) {
+            if (cancelled.get()) return;
+            send(event("assistant_sentence", sentence));
+            speak(sentence);
         }
 
         String transcribe(byte[] wav) throws Exception {
@@ -252,19 +308,22 @@ public class VoiceServer {
             if (cancelled.get() || reply.isBlank()) return;
             try {
                 byte[] wav = ttsWav(reply);
-                if (wav.length == 0) return;
+                if (wav.length == 0 || cancelled.get()) return;
+                int seq = audioSeq++;
                 ObjectNode o = event("audio_reply", "");
                 o.put("size", wav.length);
+                o.put("seq", seq);
                 send(o);
                 WebSockets.sendBinary(ByteBuffer.wrap(wav), channel, null);
             } catch (Exception e) {
-                send(error("TTS: " + e.getMessage()));
+                if (!cancelled.get()) send(error("TTS: " + e.getMessage()));
             }
         }
 
-        static byte[] ttsWav(String text) throws Exception {
+        byte[] ttsWav(String text) throws Exception {
             ProcessBuilder pb = new ProcessBuilder(ESPEAK_BIN, "-v", ESPEAK_VOICE, "--stdin", "--stdout");
             Process p = pb.start();
+            ttsProc = p;
             p.getOutputStream().write(text.getBytes(StandardCharsets.UTF_8));
             p.getOutputStream().close();
             byte[] wav;
@@ -272,6 +331,7 @@ public class VoiceServer {
                 wav = is.readAllBytes();
             }
             p.waitFor();
+            ttsProc = null;
             return wav;
         }
 
@@ -296,10 +356,13 @@ public class VoiceServer {
             return bb.array();
         }
 
-        String callLLM(String model, String system, List<Map<String,String>> hist) throws Exception {
+        // Streams the completion. `onDelta` receives text chunks and returns
+        // false to stop early (e.g. on interrupt). Uses OpenAI-style SSE.
+        void callLLMStreaming(String model, String system, List<Map<String,String>> hist,
+                              java.util.function.Predicate<String> onDelta) throws Exception {
             ObjectNode body = JSON.createObjectNode();
             body.put("model", model);
-            body.put("stream", false);
+            body.put("stream", true);
             body.put("temperature", 0.7);
             body.put("max_tokens", MAX_TOKENS);
             ObjectNode kwargs = body.putObject("chat_template_kwargs");
@@ -318,24 +381,31 @@ public class VoiceServer {
             HttpRequest req = HttpRequest.newBuilder(URI.create(LLM_URL))
                     .timeout(Duration.ofMinutes(5))
                     .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream")
                     .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
                     .build();
 
-            HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() / 100 != 2)
-                throw new IOException("HTTP " + resp.statusCode() + ": " + resp.body());
+            HttpResponse<InputStream> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofInputStream());
+            if (resp.statusCode() / 100 != 2) {
+                String err = new String(resp.body().readAllBytes(), StandardCharsets.UTF_8);
+                throw new IOException("HTTP " + resp.statusCode() + ": " + err);
+            }
 
-            JsonNode root = JSON.readTree(resp.body());
-            return root.path("choices").path(0).path("message").path("content").asText("");
-        }
-
-        void sendTextStreaming(String text) {
-            // Sentence-level streaming gives the browser a natural place to start TTS.
-            String[] parts = text.split("(?<=[.!?。！？])\\s+");
-            for (String s : parts) {
-                if (cancelled.get()) return;
-                ObjectNode o = event("assistant_sentence", s.trim());
-                send(o);
+            try (BufferedReader in = new BufferedReader(
+                    new InputStreamReader(resp.body(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = in.readLine()) != null) {
+                    if (cancelled.get()) break;
+                    if (!line.startsWith("data:")) continue;
+                    String data = line.substring(5).trim();
+                    if (data.isEmpty()) continue;
+                    if ("[DONE]".equals(data)) break;
+                    JsonNode node = JSON.readTree(data);
+                    String delta = node.path("choices").path(0).path("delta").path("content").asText("");
+                    if (!delta.isEmpty()) {
+                        if (!onDelta.test(delta)) break;
+                    }
+                }
             }
         }
 

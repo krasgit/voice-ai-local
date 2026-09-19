@@ -26,8 +26,8 @@ STACK_DIR="${STACK_DIR:-/tmp/opencode}"
 # Multilingual "small" model handles Bulgarian + English (base.en is English-only).
 WHISPER_MODEL_NAME="${WHISPER_MODEL_NAME:-small}"
 DOWNLOAD_LLM="${DOWNLOAD_LLM:-1}"
-LLM_FILE="${LLM_FILE:-Qwen2.5-7B-Instruct-Q4_K_M.gguf}"
-LLM_URL_SRC="${LLM_URL_SRC:-https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf}"
+LLM_FILE="${LLM_FILE:-Qwen2.5-3B-Instruct-Q4_K_M.gguf}"
+LLM_URL_SRC="${LLM_URL_SRC:-https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf}"
 
 log() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
 
@@ -78,7 +78,10 @@ if [ ! -d "$STACK_DIR/llama.cpp/.git" ]; then
   git clone --depth 1 https://github.com/ggml-org/llama.cpp "$STACK_DIR/llama.cpp"
 fi
 if [ ! -x "$STACK_DIR/llama.cpp/build/bin/llama-server" ]; then
-  cmake -S "$STACK_DIR/llama.cpp" -B "$STACK_DIR/llama.cpp/build" -DLLAMA_CURL=OFF -DGGML_NATIVE=ON
+  # Explicit AVX2/FMA/F16C: GGML_NATIVE sometimes fails to detect these, leaving
+  # a slow build. These flags are safe on any x86_64 CPU from ~2013 onward.
+  cmake -S "$STACK_DIR/llama.cpp" -B "$STACK_DIR/llama.cpp/build" -DLLAMA_CURL=OFF \
+      -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
   cmake --build "$STACK_DIR/llama.cpp/build" --config Release -j"$(nproc)" --target llama-server
 else
   echo "llama-server already built."

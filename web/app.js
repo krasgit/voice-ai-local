@@ -5,6 +5,7 @@ const chat = document.querySelector("#chat");
 const statusEl = document.querySelector("#status");
 const mode = document.querySelector("#mode");
 const level = document.querySelector("#level");
+const speechLangSel = document.querySelector("#speechLang");
 const form = document.querySelector("#textForm");
 const input = document.querySelector("#text");
 const voiceBtn = document.querySelector("#voiceBtn");
@@ -71,7 +72,7 @@ const roleVoice = document.querySelector("#roleVoice");
 // ---------- Settings (persisted) ----------
 const SET_KEY = "voiceai.settings.v1";
 const settingsState = Object.assign(
-  { engine:"piper", enVoice:"en_US-ryan-high", speed:1.0, ptt:false, level:"" },
+  { engine:"piper", enVoice:"en_US-ryan-high", speed:1.0, ptt:false, level:"", speechLang:"" },
   loadJSON(SET_KEY, {})
 );
 function applySettingsToUI(){
@@ -81,6 +82,7 @@ function applySettingsToUI(){
   speedVal.textContent = Number(settingsState.speed).toFixed(1) + "×";
   pttToggle.checked = settingsState.ptt;
   level.value = settingsState.level || "";
+  speechLangSel.value = settingsState.speechLang || "";
 }
 function saveSettings(){ saveJSON(SET_KEY, settingsState); }
 function loadJSON(k, d){ try{ return JSON.parse(localStorage.getItem(k)) || d; }catch(e){ return d; } }
@@ -92,7 +94,7 @@ function serverTTSActive(){ return settingsState.engine === "piper" || !synthOk;
 // ---------- WebSocket ----------
 let ws;
 function send(obj){ if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
-function sendConfig(){ send({type:"config", mode:mode.value, difficulty:settingsState.level}); }
+function sendConfig(){ send({type:"config", mode:mode.value, difficulty:settingsState.level, speechLang:settingsState.speechLang || ""}); }
 
 function connect(){
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -661,6 +663,7 @@ function updatePanels(){
 }
 updatePanels();
 level.onchange = () => { settingsState.level = level.value; saveSettings(); sendConfig(); };
+speechLangSel.onchange = () => { settingsState.speechLang = speechLangSel.value; saveSettings(); sendConfig(); };
 
 form.onsubmit = e => {
   e.preventDefault();

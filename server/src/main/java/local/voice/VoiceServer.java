@@ -160,10 +160,13 @@ public class VoiceServer {
         volatile boolean inAudio = false;
         String mode = "chat";
         String difficulty = "";   // "", A1, A2, B1, B2 — adjusts language complexity
+        String speechLang = "";   // "", "bg", "en" — manual STT language override
         String practiceTarget = "";  // current pronunciation target phrase
         String drillAnswer = "";     // hidden expected answer for the current drill
         String dictationTarget = ""; // hidden dictation sentence (heard, not shown)
         String roleplayPrompt = "";  // active role-play scenario system prompt
+        String listenPassage = "";   // hidden listening-comprehension passage
+        String listenQuestions = ""; // the questions asked about the passage
         // Current Piper TTS process, so interrupt can kill in-flight speech.
         volatile Process ttsProc = null;
         // Monotonic id for ordering streamed audio chunks on the client.
@@ -177,7 +180,10 @@ public class VoiceServer {
         }
 
         // Teacher / practice / drill / dictation / roleplay expect English speech.
+        // A manual override (speechLang: "bg"/"en") wins when set; "auto"/"" uses
+        // the mode-based default.
         String sttLang() {
+            if (speechLang.equals("bg") || speechLang.equals("en")) return speechLang;
             switch (mode) {
                 case "teacher": case "practice": case "drill":
                 case "dictation": case "roleplay": return "en";
@@ -202,6 +208,7 @@ public class VoiceServer {
                 case "config":
                     mode = n.path("mode").asText("chat");
                     difficulty = n.path("difficulty").asText("");
+                    speechLang = n.path("speechLang").asText("");
                     send(event("status", "mode=" + mode));
                     break;
                 case "text":
@@ -349,28 +356,14 @@ public class VoiceServer {
             });
         }
 
-        // Split buffered text on sentence boundaries; emit + speak each complete
-        // sentence. When force is true, flush whatever remains.
-        // Avoids splitting on list numbers ("1.") and merges very short fragments.
+        // Split buffered text into complete sentences (delegates to TextUtil so
+        // the logic is unit-tested). Emits + speaks each; keeps the tail buffered.
         void flushSentences(StringBuilder buf, boolean force) {
-            java.util.regex.Matcher m =
-                java.util.regex.Pattern.compile("(.+?[.!?…。！？])(\\s+|$)", java.util.regex.Pattern.DOTALL)
-                    .matcher(buf);
-            int consumed = 0;   // chars consumed up to and including last emitted sentence
-            while (m.find()) {
-                String sentence = m.group(1).trim();
-                // Don't emit a lone list marker like "1." or "2)"; keep buffering.
-                if (sentence.matches("\\d+[.)]")) break;
-                // Too short to be a useful TTS chunk unless forcing a flush.
-                if (!force && sentence.replaceAll("[^\\p{L}]", "").length() < 3) break;
-                if (!sentence.isEmpty()) emitSentence(sentence);
-                consumed = m.end();
-            }
-            if (consumed > 0) buf.delete(0, consumed);
-            if (force && buf.toString().trim().length() > 0) {
-                emitSentence(buf.toString().trim());
-                buf.setLength(0);
-            }
+            String[] rem = new String[1];
+            List<String> sentences = TextUtil.flushSentences(buf.toString(), force, rem);
+            for (String s : sentences) emitSentence(s);
+            buf.setLength(0);
+            buf.append(rem[0] == null ? "" : rem[0]);
         }
 
         void emitSentence(String sentence) {
@@ -379,16 +372,23 @@ public class VoiceServer {
             speak(sentence);
         }
 
+        // Transcribes audio using the resolved language. Automatic BG/EN
+        // detection is unreliable with Whisper (forcing bg always yields Cyrillic,
+        // forcing en yields fluent English even for Bulgarian speech), so we use
+        // the mode default or the user's manual 🎙 language toggle.
         String transcribe(byte[] wav) throws Exception {
+            return transcribeLang(wav, sttLang());
+        }
+
+        String transcribeLang(byte[] wav, String lang) throws Exception {
             String boundary = "----VoiceAI" + Long.toHexString(System.nanoTime()) + "Boundary";
             ByteArrayOutputStream body = new ByteArrayOutputStream();
             body.write(("--" + boundary + "\r\n" +
                     "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n" +
                     "Content-Type: audio/wav\r\n\r\n").getBytes(StandardCharsets.UTF_8));
             body.write(wav);
-            // Language for whisper, mode-aware (teacher=en, else STT_LANG).
             String fields = "\r\n--" + boundary + "\r\n" +
-                    "Content-Disposition: form-data; name=\"language\"\r\n\r\n" + sttLang() + "\r\n" +
+                    "Content-Disposition: form-data; name=\"language\"\r\n\r\n" + lang + "\r\n" +
                     "--" + boundary + "\r\n" +
                     "Content-Disposition: form-data; name=\"response_format\"\r\n\r\njson\r\n";
             body.write(fields.getBytes(StandardCharsets.UTF_8));
@@ -446,16 +446,25 @@ public class VoiceServer {
             return wav;
         }
 
-        // Ask the LLM for a concise Bulgarian translation of a word/phrase and
-        // return it as a "translation" event (does not touch conversation history).
+        // Ask for a concise Bulgarian translation. Checks a local dictionary of
+        // common words first (accurate, no Russian slips); LLM is the fallback.
         void translate(String phrase) {
             if (phrase.isEmpty()) return;
+            String local = Dictionary.lookup(phrase);
+            if (local != null) {
+                ObjectNode o = event("translation", "");
+                o.put("phrase", phrase);
+                o.put("value", local);
+                o.put("source", "dictionary");
+                send(o);
+                return;
+            }
             CompletableFuture.runAsync(() -> {
                 try {
                     String sys = "You are an English→Bulgarian dictionary. Give the most common Bulgarian " +
                             "translation of the English word or phrase the user sends. Reply with ONLY the " +
-                            "Bulgarian word(s), no quotes, no English, no explanation. " +
-                            "Examples: 'ask' -> питам; 'weather' -> време; 'run' -> тичам.";
+                            "Bulgarian word(s) in correct Bulgarian (never Russian), no quotes, no English, " +
+                            "no explanation. Examples: 'ask' -> питам; 'weather' -> време; 'run' -> тичам.";
                     List<Map<String,String>> one =
                             List.of(Map.of("role", "user", "content", phrase));
                     StringBuilder sb = new StringBuilder();
@@ -463,6 +472,7 @@ public class VoiceServer {
                     ObjectNode o = event("translation", "");
                     o.put("phrase", phrase);
                     o.put("value", sb.toString().trim());
+                    o.put("source", "llm");
                     send(o);
                 } catch (Exception e) {
                     send(error("Translate: " + e.getMessage()));
@@ -773,6 +783,49 @@ public class VoiceServer {
         }
     }
 
+    // A small, curated English→Bulgarian dictionary of common words. Used before
+    // the LLM so frequent words are always translated correctly (no Russian slips).
+    static class Dictionary {
+        static final Map<String,String> MAP = new HashMap<>();
+        static {
+            String[][] pairs = {
+                {"ask","питам"},{"answer","отговарям"},{"weather","време"},{"run","тичам"},
+                {"walk","вървя"},{"eat","ям"},{"drink","пия"},{"sleep","спя"},{"read","чета"},
+                {"write","пиша"},{"speak","говоря"},{"listen","слушам"},{"hear","чувам"},
+                {"see","виждам"},{"look","гледам"},{"buy","купувам"},{"sell","продавам"},
+                {"happy","щастлив"},{"sad","тъжен"},{"angry","ядосан"},{"tired","уморен"},
+                {"hungry","гладен"},{"thirsty","жаден"},{"big","голям"},{"small","малък"},
+                {"good","добър"},{"bad","лош"},{"fast","бърз"},{"slow","бавен"},
+                {"hot","горещ"},{"cold","студен"},{"new","нов"},{"old","стар"},
+                {"water","вода"},{"food","храна"},{"bread","хляб"},{"coffee","кафе"},
+                {"tea","чай"},{"house","къща"},{"car","кола"},{"book","книга"},
+                {"school","училище"},{"work","работа"},{"friend","приятел"},{"family","семейство"},
+                {"child","дете"},{"man","мъж"},{"woman","жена"},{"day","ден"},
+                {"night","нощ"},{"morning","сутрин"},{"today","днес"},{"tomorrow","утре"},
+                {"yesterday","вчера"},{"year","година"},{"money","пари"},
+                {"love","обичам"},{"like","харесвам"},{"want","искам"},{"need","нуждая се"},
+                {"know","знам"},{"think","мисля"},{"understand","разбирам"},{"learn","уча"},
+                {"teach","преподавам"},{"help","помагам"},{"give","давам"},{"take","вземам"},
+                {"go","отивам"},{"come","идвам"},{"make","правя"},{"say","казвам"},
+                {"tell","казвам"},{"open","отварям"},{"close","затварям"},
+                {"start","започвам"},{"stop","спирам"},{"yes","да"},{"no","не"},
+                {"please","моля"},{"thanks","благодаря"},{"hello","здравей"},{"goodbye","довиждане"},
+                {"dog","куче"},{"cat","котка"},{"tree","дърво"},{"city","град"},
+                {"country","държава"},{"language","език"},{"word","дума"},{"sentence","изречение"},
+                {"question","въпрос"},{"name","име"},{"street","улица"},{"door","врата"},
+                {"window","прозорец"},{"table","маса"},{"chair","стол"},{"phone","телефон"},
+            };
+            for (String[] p : pairs) MAP.put(p[0], p[1]);
+        }
+        // Returns the Bulgarian translation for a single known word, or null.
+        static String lookup(String phrase) {
+            if (phrase == null) return null;
+            String key = phrase.trim().toLowerCase(Locale.ROOT).replaceAll("[^a-z'-]", "");
+            if (key.isEmpty()) return null;
+            return MAP.get(key);
+        }
+    }
+
     static class IntentRouter {
         static class Result {
             String intent; boolean reasoning; String systemPrompt;
@@ -801,9 +854,11 @@ public class VoiceServer {
             return "You are a local voice assistant for a Bulgarian user who is also learning English. " +
                     "Be natural and concise. The user may mix Bulgarian and English. " +
                     "When you write Bulgarian, use correct, natural Bulgarian only — never Russian words or spelling. " +
-                    "When the user explicitly asks to translate a word or phrase (e.g. 'преведи', 'translate', " +
-                    "'какво значи', 'what does X mean'), give a short, accurate dictionary translation first, " +
-                    "then optionally one short example. Do not treat ordinary English words as abbreviations. " +
+                    "When the user asks how to say a Bulgarian word/phrase in English (e.g. 'Как е на английски X', " +
+                    "'как се казва X на английски'), reply with the correct English word/phrase directly, then a " +
+                    "one short example. For example: 'Как е на английски здрасти?' -> \"Hi\" or \"Hello\". " +
+                    "When the user asks to translate an English word into Bulgarian (e.g. 'преведи', 'какво значи'), " +
+                    "give a short accurate Bulgarian translation first. Do not treat ordinary words as abbreviations. " +
                     "Otherwise, do not translate everything automatically; keep useful technical English terms as-is.";
         }
 

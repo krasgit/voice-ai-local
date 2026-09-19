@@ -19,7 +19,7 @@ Piper has no server; the Java app pipes text to `scripts/piper-tts.sh` per reply
 - Linux x86_64 (the Piper binary in setup is for `linux_x86_64`)
 - Java 11+ and Maven
 - `sudo` access for `apt-get` (to install `cmake`, `build-essential`, `espeak-ng`)
-- ~8 GB free disk (multilingual Whisper model + Qwen2.5-7B chat model)
+- ~6 GB free disk (multilingual Whisper model + Qwen2.5-3B chat model)
 
 ## 1. One-time setup
 
@@ -30,7 +30,16 @@ Piper has no server; the Java app pipes text to `scripts/piper-tts.sh` per reply
 This installs build dependencies, builds whisper.cpp and llama.cpp, downloads the
 multilingual Whisper `small` model (handles Bulgarian + English), installs Piper
 with voices (`bg_BG-dimitar-medium`, `en_US-ryan-high`), and downloads the
-`Qwen2.5-7B-Instruct` chat model (~4.7 GB).
+`Qwen2.5-3B-Instruct` chat model (~2 GB). It builds llama.cpp with AVX2/FMA for
+fast CPU inference.
+
+For higher-quality (slower) replies, use the 7B model instead:
+
+```bash
+LLM_FILE=Qwen2.5-7B-Instruct-Q4_K_M.gguf \
+LLM_URL_SRC=https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf \
+./scripts/setup.sh
+```
 
 Skip the LLM download and bring your own model:
 
